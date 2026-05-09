@@ -1,0 +1,9 @@
+name: default
+version: "0.1.0"
+description: "通用能力包 — 文件操作、命令执行、任务规划、记忆管理、文档生成"
+
+tools: tools/
+mcp_servers: mcp/config.json
+skills: skills/
+workflows: workflows/
+prompt: prompts/

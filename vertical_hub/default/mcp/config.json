@@ -1,0 +1,15 @@
+{
+  "minimax": {
+    "type": "stdio",
+    "command": "uvx",
+    "args": ["minimax-coding-plan-mcp"],
+    "env": {
+      "MINIMAX_API_KEY": "${MINIMAX_API_KEY}",
+      "MINIMAX_MCP_BASE_PATH": "./workspace",
+      "MINIMAX_API_HOST": "https://api.minimaxi.com"
+    },
+    "enabled": true,
+    "enabled_tools": ["*"],
+    "tool_timeout": 60
+  }
+}

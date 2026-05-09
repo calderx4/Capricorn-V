@@ -1,0 +1,54 @@
+{
+  "workspace": {
+    "root": "./workspace",
+    "memory_dir": "memory",
+    "session_dir": "sessions",
+    "sandbox": false
+  },
+
+  "blocked_commands": [
+    "rm -rf /",
+    "mkfs",
+    "dd if=",
+    "format",
+    "shutdown",
+    "reboot"
+  ],
+
+  "llm": {
+      "provider": "openai",
+      "model": "MiniMax-M2.7",
+      "api_key": "${MINIMAX_API_KEY}",
+      "api_base": "https://api.minimaxi.com/v1",
+      "temperature": 0.0,
+      "max_tokens": 128000
+    },
+
+  "memory": {
+    "enabled": true,
+    "message_threshold": 120,
+    "messages_to_keep": 60,
+    "token_threshold": 800000,
+    "context_budget": 1280000
+  },
+
+  "agent": {
+    "max_iterations": 50
+  },
+
+  "cron": {
+    "enabled": true,
+    "tick_interval": 60,
+    "output_dir": "gateway/output",
+    "default_timeout": 300,
+    "fresh_session": false
+  },
+
+  "gateway": {
+    "host": "127.0.0.1",
+    "port": 8080
+  },
+
+  "vertical_hub": "vertical_hub",
+  "verticals": ["default"]
+}

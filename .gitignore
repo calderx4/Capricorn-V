@@ -1,0 +1,42 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.dylib
+*.egg
+*.egg-info/
+*.whl
+dist/
+build/
+.eggs/
+
+# Test
+.pytest_cache/
+.coverage
+
+# Environment
+.env
+.env.local
+
+# System
+.DS_Store
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Project runtime
+workspace/
+logs/
+gateway/
+docs/
+
+# Claude Code
+.claude/
+CLAUDE.md
+.gstack/

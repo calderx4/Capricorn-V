@@ -1,0 +1,6 @@
+verticals:
+  - name: default
+    path: default
+    version: "0.1.0"
+    description: "通用能力 — 文件操作、执行、记忆、Cron、文档生成"
+    autoload: true
