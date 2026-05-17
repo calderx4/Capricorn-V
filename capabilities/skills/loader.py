@@ -52,6 +52,7 @@ class SkillLoader:
                         "name": frontmatter.get("name"),
                         "description": frontmatter.get("description", ""),
                         "available": frontmatter.get("available", False),
+                        "autoload": frontmatter.get("autoload", False),
                         "content": body,
                         "path": str(skill_path)
                     }

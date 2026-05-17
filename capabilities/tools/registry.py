@@ -34,6 +34,14 @@ class ToolRegistry:
                 logger.warning(f"Tool '{tool.name}' schema missing 'type' field")
 
             public_name = public_name or tool.name
+            if public_name in self._tools:
+                existing_layer = self._layers.get(public_name, "?")
+                existing_vertical = self._vertical_map.get(public_name, "")
+                raise ValueError(
+                    f"Tool name conflict: '{public_name}' already registered "
+                    f"[{existing_layer}]{f' vertical={existing_vertical}' if existing_vertical else ''}. "
+                    f"Each vertical must be loaded independently."
+                )
             self._tools[public_name] = tool
             self._layers[public_name] = layer
             self._public_names[public_name] = tool.name

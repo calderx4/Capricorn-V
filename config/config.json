@@ -28,8 +28,8 @@
     "enabled": true,
     "message_threshold": 120,
     "messages_to_keep": 60,
-    "token_threshold": 800000,
-    "context_budget": 1280000
+    "token_threshold": 100000,
+    "context_budget": 160000
   },
 
   "agent": {
@@ -50,5 +50,5 @@
   },
 
   "vertical_hub": "vertical_hub",
-  "verticals": ["default"]
+  "verticals": ["data-analysis"]
 }

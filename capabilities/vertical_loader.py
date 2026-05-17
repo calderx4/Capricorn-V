@@ -7,14 +7,11 @@ VerticalLoader - 垂类加载器
 - 管理已加载垂类的生命周期
 """
 
-import json
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 import yaml
 from loguru import logger
-
-from config.settings import Config, MCPServerConfig
 
 
 class VerticalLoader:
@@ -35,11 +32,11 @@ class VerticalLoader:
 
     def _resolve_path(self, vertical_dir: Path, rel_path: str) -> Path:
         """将 vertical.yaml 中的相对路径解析为绝对路径"""
-        p = vertical_dir / rel_path
-        return p.resolve()
-
-    def list_available(self) -> list[str]:
-        return [v["name"] for v in self._manifest.get("verticals", [])]
+        p = (vertical_dir / rel_path).resolve()
+        vertical_root = vertical_dir.resolve()
+        if not str(p).startswith(str(vertical_root)):
+            raise ValueError(f"Path traversal detected: '{rel_path}' resolves outside vertical directory")
+        return p
 
     def is_loaded(self, name: str) -> bool:
         return name in self._loaded
@@ -88,20 +85,8 @@ class VerticalLoader:
                     "sandbox": getattr(capability_registry, "_sandbox", True),
                     "blocked_commands": getattr(capability_registry, "_blocked_commands", []),
                 }
-                # tool_prefix 控制：yaml 里显式声明才生效
-                #   tool_prefix: false / "" → 不加前缀
-                #   tool_prefix: "xxx"     → 用 xxx 作前缀
-                #   不声明                  → 走原逻辑（default 不加，其余加 vertical_name_）
-                register_name = None
-                if "tool_prefix" in manifest:
-                    tp = manifest["tool_prefix"]
-                    if tp is False or tp == "":
-                        register_name = ""
-                    else:
-                        register_name = str(tp)
                 await capability_registry.register_tools_from_dir(
                     tools_dir, config_dict, layer="vertical", vertical_name=name,
-                    tool_prefix=register_name,
                 )
                 logger.info(f"Vertical '{name}': tools loaded from {tools_dir}")
 
@@ -145,15 +130,39 @@ class VerticalLoader:
 
                 logger.info(f"Vertical '{name}': prompts loaded from {prompt_dir}")
 
+        # 6. 加载 roles
+        roles_rel = manifest.get("roles")
+        if roles_rel:
+            roles_dir = self._resolve_path(vertical_dir, roles_rel)
+            if roles_dir.exists():
+                roles = self._load_roles(roles_dir, vertical_dir)
+                if roles:
+                    result["roles"] = roles
+                    logger.info(f"Vertical '{name}': roles loaded: {list(roles.keys())}")
+
         self._loaded[name] = result
         logger.info(f"✓ Vertical '{name}' loaded successfully")
         return result
 
-    async def unload(self, name: str, capability_registry, skill_manager):
-        if not self.is_loaded(name):
-            return
+    def _load_roles(self, roles_dir: Path, vertical_dir: Path) -> Dict[str, dict]:
+        """扫描 roles/ 目录，加载角色定义"""
+        roles = {}
+        for yaml_file in sorted(roles_dir.glob("*.yaml")):
+            try:
+                with open(yaml_file, "r", encoding="utf-8") as f:
+                    role_def = yaml.safe_load(f)
 
-        capability_registry.unregister_by_vertical(name)
-        skill_manager.remove_skills_by_vertical(name)
-        self._loaded.pop(name, None)
-        logger.info(f"✓ Vertical '{name}' unloaded")
+                role_name = role_def.get("name", yaml_file.stem)
+                prompt_rel = role_def.get("prompt")
+                prompt_path = str(self._resolve_path(vertical_dir, prompt_rel)) if prompt_rel else None
+
+                roles[role_name] = {
+                    "name": role_name,
+                    "description": role_def.get("description", ""),
+                    "prompt_path": prompt_path,
+                    "tools": role_def.get("tools", "all"),
+                }
+            except Exception as e:
+                logger.error(f"Failed to load role {yaml_file}: {e}")
+
+        return roles

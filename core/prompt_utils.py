@@ -5,6 +5,9 @@ Prompt 工具函数 — PromptBuilder + section 构建器
 """
 
 from pathlib import Path
+from loguru import logger
+
+from capabilities.skills.loader import SkillLoader
 
 
 class PromptBuilder:
@@ -62,26 +65,36 @@ def build_skills_section(skill_manager) -> str:
     skills = skill_manager.list_skills()
     if not skills:
         return ""
-    # 只用无命名空间的 skill 生成 summary（避免 default.xxx 重复）
+
+    parts = []
+
+    # 1. autoload 技能：内容直接注入 system prompt
+    autoload_skills = skill_manager.get_autoload_skills()
+    if autoload_skills:
+        for skill_name, skill_data in autoload_skills.items():
+            content = skill_data.get("content", "").strip()
+            if content:
+                parts.append(f"# Skill: {skill_name}\n\n{content}")
+
+    # 2. available 但非 autoload 的技能：只注入摘要，按需 skill_view 加载
     available = skill_manager.get_available_skills()
-    clean_available = {k: v for k, v in available.items() if "." not in k}
-    if not clean_available:
-        clean_available = available
+    on_demand = {
+        k: v for k, v in available.items()
+        if not v.get("autoload", False) and "." not in k
+    }
+    if on_demand:
+        summaries = [SkillLoader.get_summary(v) for v in on_demand.values()]
+        summary = "<skills>\n" + "\n".join(summaries) + "\n</skills>"
 
-    # 临时替换 skill_manager 的 get_available_skills 来生成干净的 summary
-    original = skill_manager.get_available_skills
-    skill_manager.get_available_skills = lambda: clean_available
-    summary = skill_manager.get_skill_summary()
-    skill_manager.get_available_skills = original
+        if summary:
+            parts.append(
+                "# Available Skills\n\n"
+                "你可以使用以下技能。当用户的请求匹配某个技能时，"
+                "**必须**先调用 `skill_view(name)` 加载完整指令后再执行。\n\n"
+                f"{summary}"
+            )
 
-    if not summary:
-        return ""
-    return (
-        "# Available Skills\n\n"
-        "你可以使用以下技能。当用户的请求匹配某个技能时，"
-        "**必须**先调用 `skill_view(name)` 加载完整指令后再执行。\n\n"
-        f"{summary}"
-    )
+    return "\n\n".join(parts)
 
 
 def build_memory_section(long_term_memory) -> str:

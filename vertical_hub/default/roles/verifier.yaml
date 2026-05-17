@@ -1,0 +1,14 @@
+name: verifier
+prompt: prompts/roles/verifier.md
+description: "验证产出质量，记录质量信号"
+tools:
+  - quality_check
+  - quality_signal
+  - changelog
+  - bia_update
+  - read_file
+  - write_file
+  - edit_file
+  - list_files
+  - skill_view
+  - todo

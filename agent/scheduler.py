@@ -10,12 +10,13 @@ CronScheduler - 定时任务调度器
 
 import asyncio
 import fcntl
+import importlib.util
 import json
 import re
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from croniter import croniter
 from loguru import logger
@@ -26,6 +27,7 @@ from core.prompt_utils import (
     build_bia_section, PromptBuilder,
 )
 from core.utils import atomic_write
+from core import trace
 
 
 def _short_id() -> str:
@@ -122,10 +124,12 @@ class CronScheduler:
         self.cron_cfg = config.cron
         self.TICK_INTERVAL = self.cron_cfg.tick_interval
 
-        self.jobs_path = Path("gateway/jobs.json")
-        self.lock_path = Path("gateway/.tick.lock")
-        self.output_dir = Path("gateway/output")
-        self.workspaces_dir = Path("gateway/workspaces")
+        # 所有 gateway 路径基于项目根目录（从 workspace.root 绝对路径推导）
+        project_root = Path(config.workspace.root).parent
+        self.jobs_path = project_root / "gateway" / "jobs.json"
+        self.lock_path = project_root / "gateway" / ".tick.lock"
+        self.output_dir = project_root / "gateway" / "output"
+        self.workspaces_dir = project_root / "gateway" / "workspaces"
 
         self._lock_fd = None
         self._initialized = False
@@ -139,8 +143,9 @@ class CronScheduler:
         self._long_term_memory = None
         self._cron_prompt_path = None  # 垂类提供的 cron prompt 路径
         self._bia_path = None
+        self._roles = {}  # 角色配置
 
-    def initialize(self, llm_client, capability_registry, skill_manager, long_term_memory, notification_bus=None, cron_prompt_path=None, bia_path=None):
+    def initialize(self, llm_client, capability_registry, skill_manager, long_term_memory, notification_bus=None, cron_prompt_path=None, bia_path=None, roles=None, active_dir=None):
         """注入主 Agent 的共享组件"""
         self._llm_client = llm_client
         self._capability_registry = capability_registry
@@ -149,8 +154,10 @@ class CronScheduler:
         self._notification_bus = notification_bus
         self._cron_prompt_path = cron_prompt_path
         self._bia_path = bia_path
+        self._roles = roles or {}
+        self._active_dir = Path(active_dir) if active_dir else None
         self._initialized = True
-        logger.info("CronScheduler initialized with shared agent components")
+        logger.info(f"CronScheduler initialized (roles: {list(self._roles.keys())})")
 
     # ── 任务管理（async，受 asyncio.Lock 保护）──────────
 
@@ -171,6 +178,7 @@ class CronScheduler:
                 "prompt": kwargs.get("prompt", ""),
                 "fresh_session": kwargs.get("fresh_session", self.config.cron.fresh_session),
                 "system_prompt": kwargs.get("system_prompt"),
+                "role": kwargs.get("role"),
                 "workdir": str(self.workspaces_dir / workdir_name),
                 "next_run_at": calc_next_run(schedule),
                 "status": "active",
@@ -351,20 +359,34 @@ class CronScheduler:
         finally:
             self._release_lock()
 
-    def _build_cron_prompt(self, job: dict) -> str:
+    def _build_cron_prompt(self, job: dict, cron_memory=None) -> str:
         """构建 cron 专用 system prompt（自包含，不嵌套 system.md）"""
-        builder = PromptBuilder(self._cron_prompt_path)
+        # 如果 job 有 role，使用 role 的 prompt 模板
+        role_name = job.get("role")
+        prompt_path = self._cron_prompt_path
+        if role_name and role_name in self._roles:
+            role_prompt = self._roles[role_name].get("prompt_path")
+            if role_prompt:
+                prompt_path = role_prompt
 
+        if not prompt_path:
+            raise RuntimeError("No prompt template available for cron job (no cron_prompt_path and no role prompt_path)")
+
+        builder = PromptBuilder(prompt_path)
+
+        # cron 共享主 workspace（工具的 workspace_root 指向主 workspace）
+        # gateway/workspaces/{name}/ 仅用于会话文件隔离
         workspace_section = (
             f"# Workspace\n\n"
-            f"工作区根目录：`{job['workdir']}`（沙盒模式）\n"
+            f"工作区根目录：`{self.config.workspace.root}`\n"
             f"路径直接写相对路径，不要加前缀。"
         )
         builder.set("workspace_section", workspace_section)
         builder.set("bia_section", build_bia_section(self._bia_path))
 
         fresh = job.get("fresh_session", False)
-        builder.set("memory_section", "" if fresh else build_memory_section(self._long_term_memory))
+        # cron 使用自己的 memory（如果有的话），不读主 agent 的
+        builder.set("memory_section", "" if fresh else build_memory_section(cron_memory))
         builder.set("tools_section", build_tools_section(self._capability_registry))
         builder.set("skills_section", build_skills_section(self._skill_manager))
         builder.set("task_prompt", job.get("prompt", ""))
@@ -377,6 +399,7 @@ class CronScheduler:
         from agent.agent import CapricornGraph
         from memory.session import SessionManager
         from memory.history import HistoryLog
+        from memory.long_term import LongTermMemory
 
         workdir = Path(job["workdir"])
         workdir.mkdir(parents=True, exist_ok=True)
@@ -385,26 +408,133 @@ class CronScheduler:
         session_manager = SessionManager(workspace)
         history_log = HistoryLog(workspace)
 
+        # cron 使用自己的 long_term_memory（写入 gateway/workspaces/{name}/memory/）
         fresh = job.get("fresh_session", False)
-        memory = None if fresh else self._long_term_memory
-        cron_prompt = self._build_cron_prompt(job)
+        cron_memory = None if fresh else LongTermMemory(workspace)
+
+        cron_prompt = self._build_cron_prompt(job, cron_memory)
+
+        # 工具过滤：如果 job 有 role，按白名单排除
+        exclude_tools = self._compute_exclude_tools(job.get("role"))
 
         graph = CapricornGraph(
             capability_registry=self._capability_registry,
             skill_manager=self._skill_manager,
             session_manager=session_manager,
-            long_term_memory=memory,
+            long_term_memory=cron_memory,
             history_log=history_log,
             llm_client=self._llm_client,
             sandbox=True,
             max_iterations=self.config.agent.get("max_iterations", 50),
-            exclude_tools=["cron"],
+            exclude_tools=exclude_tools,
             system_prompt_override=cron_prompt,
         )
 
         logger.info(f"Executing cron job: {job['id']} ({job['name']})")
         result = await graph.run("执行上述任务。", thread_id="default")
+
+        # 执行后检查：是否需要整合 cron 自己的 session
+        if not fresh and self.config.memory.enabled:
+            await self._consolidate_cron_session(
+                job, session_manager, cron_memory, history_log
+            )
+
         return result
+
+    async def _consolidate_cron_session(
+        self, job: dict, session_manager, long_term_memory, history_log
+    ):
+        """cron 执行后检查 session 是否需要整合（写入 cron 自己的 memory 和 history）"""
+        if not self._active_dir:
+            return
+        try:
+            mem_cfg = self.config.memory
+
+            session = session_manager.get_session("default")
+            messages = session.get_history(max_messages=0)
+
+            if not messages:
+                return
+
+            # 触发条件 1：消息条数
+            total = len(messages)
+            triggered_by = None
+            if total > mem_cfg.message_threshold:
+                triggered_by = f"messages({total} > {mem_cfg.message_threshold})"
+
+            # 触发条件 2：总 token 数
+            if not triggered_by and mem_cfg.token_threshold > 0:
+                from core.token_counter import TokenCounter
+                est_tokens = TokenCounter.count_messages_tokens(messages)
+                if est_tokens > mem_cfg.token_threshold:
+                    triggered_by = f"tokens({est_tokens} > {mem_cfg.token_threshold})"
+
+            if not triggered_by:
+                return
+
+            logger.info(f"Cron [{job['name']}] consolidation triggered by {triggered_by}")
+
+            import sys
+            mc_path = self._active_dir / "workflows" / "memory_consolidation" / "__init__.py"
+            if not mc_path.exists():
+                logger.warning(f"Memory consolidation workflow not found: {mc_path}")
+                return
+            project_root = str(Path(__file__).parent.parent)
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+            spec = importlib.util.spec_from_file_location("memory_consolidation", mc_path)
+            _mc_mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(_mc_mod)
+            MCWorkflow = _mc_mod.MemoryConsolidationWorkflow
+
+            workflow = MCWorkflow(
+                long_term_memory=long_term_memory,
+                history_log=history_log,
+                llm_client=self._llm_client,
+                config={
+                    "max_messages": mem_cfg.message_threshold,
+                    "messages_to_keep": mem_cfg.messages_to_keep,
+                    "max_tokens": mem_cfg.token_threshold,
+                    "context_budget": mem_cfg.context_budget,
+                }
+            )
+
+            session_data = {"messages": messages}
+            success = await workflow.execute(session_data=session_data)
+
+            if success:
+                to_consolidate = workflow.get_messages_to_consolidate(session_data)
+                num_remove = len(to_consolidate)
+                remaining = messages[num_remove:]
+                while remaining and remaining[0].get("role") == "tool":
+                    remaining.pop(0)
+                session_manager.rewrite_session("default", remaining)
+                trace.consolidation(triggered_by, len(messages), len(remaining), True)
+                logger.info(f"Cron [{job['name']}] consolidated {num_remove} → {len(remaining)} messages")
+            else:
+                trace.consolidation(triggered_by, len(messages), len(messages), False)
+                logger.warning(f"Cron [{job['name']}] consolidation failed")
+
+        except Exception as e:
+            logger.exception(f"Cron [{job['name']}] consolidation error: {e}")
+
+    def _compute_exclude_tools(self, role_name: Optional[str]) -> list:
+        """根据角色计算要排除的工具列表"""
+        if not role_name or role_name not in self._roles:
+            return ["cron", "spawn"]
+
+        role_tools = self._roles[role_name].get("tools")
+        if role_tools == "all" or not role_tools:
+            return ["cron", "spawn"]
+
+        all_tools = [t.name for t in self._capability_registry.get_langchain_tools()]
+        excluded = [t for t in all_tools if t not in role_tools]
+
+        for must_exclude in ("cron", "spawn"):
+            if must_exclude not in excluded:
+                excluded.append(must_exclude)
+
+        return excluded
 
     # ── 状态管理 ──────────────────────────────────────
 

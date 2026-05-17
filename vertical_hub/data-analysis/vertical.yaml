@@ -1,0 +1,10 @@
+name: data-analysis
+version: "0.1.0"
+description: "数据分析 — SQL 查询、统计分析、报告生成、自进化质量检查"
+
+tools: tools/
+mcp_servers: mcp/config.json
+skills: skills/
+workflows: workflows/
+prompt: prompts/
+roles: roles/

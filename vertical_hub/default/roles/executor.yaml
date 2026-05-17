@@ -1,0 +1,4 @@
+name: executor
+prompt: prompts/roles/executor.md
+description: "执行具体任务，产出结果"
+tools: all

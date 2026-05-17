@@ -157,8 +157,8 @@ def main():
     args = parser.parse_args()
 
     # 配置日志
-    log_dir = Path(__file__).parent / "logs"
-    log_dir.mkdir(exist_ok=True)
+    log_dir = Path(__file__).parent / "gateway" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
 
     log_fmt = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {name}:{function}:{line} - {message}"
     log_rotation = {"rotation": "10 MB", "retention": "7 days", "encoding": "utf-8"}

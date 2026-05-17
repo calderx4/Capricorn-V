@@ -4,3 +4,8 @@ verticals:
     version: "0.1.0"
     description: "通用能力 — 文件操作、执行、记忆、Cron、文档生成"
     autoload: true
+  - name: data-analysis
+    path: data-analysis
+    version: "0.1.0"
+    description: "数据分析 — SQL 查询、统计分析、报告生成、自进化质量检查"
+    autoload: false

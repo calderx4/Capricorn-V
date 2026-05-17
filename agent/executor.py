@@ -8,7 +8,7 @@ Executor - Agent 执行器
 """
 
 from pathlib import Path
-from typing import Optional, Dict
+from typing import Optional
 import importlib.util
 from loguru import logger
 from langchain_core.messages import AIMessage
@@ -52,6 +52,7 @@ class CapricornAgent:
         self._system_prompt_path: Optional[str] = None
         self._cron_prompt_path: Optional[str] = None
         self._bia_path: Optional[str] = None
+        self._roles: dict = {}  # 角色配置
 
     @classmethod
     async def create(cls, config: Config, config_path: str = None, notification_bus=None) -> "CapricornAgent":
@@ -98,14 +99,19 @@ class CapricornAgent:
         for vertical_name in self.config.verticals:
             await self._load_vertical(vertical_name)
 
-        # 构建 bia 路径（垂类 prompts 目录下）
-        self._bia_path = str(Path(self.config.vertical_hub) / "default" / "prompts" / "bia.md")
+        # 从当前垂类目录获取路径（独立模式：只加载一个垂类）
+        if not self._loaded_verticals:
+            raise RuntimeError("No verticals loaded. Check config.verticals setting.")
+        active_vertical = self._loaded_verticals[-1]
+        active_dir = self.vertical_loader.get_vertical_dir(active_vertical)
+        self._bia_path = str(active_dir / "prompts" / "bia.md")
+        self._active_dir = active_dir
 
         # 注册 skill_view 工具（如果有可用 skills）
-        await self.capability_registry.register_skill_tools(self.skill_manager)
+        await self.capability_registry.register_skill_tools(self.skill_manager, vertical_dir=active_dir)
 
         # 注册 bia_update 工具
-        bia_tool_path = Path(self.config.vertical_hub) / "default" / "tools" / "bia_tools.py"
+        bia_tool_path = active_dir / "tools" / "bia_tools.py"
         spec = importlib.util.spec_from_file_location("bia_tools", bia_tool_path)
         _bia_mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(_bia_mod)
@@ -128,7 +134,7 @@ class CapricornAgent:
             from agent.scheduler import CronScheduler
 
             # 动态加载 CronTool（auto_discover=False，需手动注册）
-            cron_tool_path = Path(self.config.vertical_hub) / "default" / "tools" / "cron_tools.py"
+            cron_tool_path = self._active_dir / "tools" / "cron_tools.py"
             spec = importlib.util.spec_from_file_location("cron_tools", cron_tool_path)
             _mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(_mod)
@@ -143,12 +149,47 @@ class CapricornAgent:
                 notification_bus=self._notification_bus,
                 cron_prompt_path=self._cron_prompt_path,
                 bia_path=self._bia_path,
+                roles=self._roles,
+                active_dir=str(self._active_dir),
             )
 
             cron_tool = CronTool(self._cron_scheduler)
             self.capability_registry.tools.register(cron_tool, layer="builtin")
 
-        # 9. 构建图（绑定所有工具到 LLM，包括 cron）
+        # 9. 注册 Team 工具（如果垂类定义了 roles）
+        if self._roles:
+            team_tool_path = self._active_dir / "tools" / "team_tools.py"
+            if team_tool_path.exists():
+                spec = importlib.util.spec_from_file_location("team_tools", team_tool_path)
+                _team_mod = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(_team_mod)
+
+                # 注册 task 工具
+                task_tool = _team_mod.TaskManageTool(
+                    workspace_root=self.config.workspace.root,
+                )
+                self.capability_registry.tools.register(task_tool, layer="builtin")
+
+                # 注册 spawn 工具
+                spawn_tool = _team_mod.SpawnTool(
+                    llm_client=self.llm_client,
+                    capability_registry=self.capability_registry,
+                    skill_manager=self.skill_manager,
+                    long_term_memory=self.long_term_memory,
+                    roles=self._roles,
+                    bia_path=self._bia_path,
+                    workspace_root=self.config.workspace.root,
+                    sandbox=self.config.workspace.sandbox,
+                    max_iterations=self.config.agent.get("max_iterations", 50),
+                )
+                self.capability_registry.tools.register(spawn_tool, layer="builtin")
+                logger.info(f"Team tools registered (roles: {list(self._roles.keys())})")
+
+            # 自动注册 verifier cron（如果不存在）
+            if self._cron_scheduler and "verifier" in self._roles:
+                await self._auto_register_verifier_cron()
+
+        # 10. 构建图（绑定所有工具到 LLM，包括 cron + team tools）
         self.graph = CapricornGraph(
             self.capability_registry,
             self.skill_manager,
@@ -177,6 +218,8 @@ class CapricornAgent:
             self._system_prompt_path = result["system_prompt_path"]
         if result.get("cron_prompt_path"):
             self._cron_prompt_path = result["cron_prompt_path"]
+        if result.get("roles"):
+            self._roles = result["roles"]
 
     def _init_llm_client(self):
         """初始化 LLM 客户端"""
@@ -319,9 +362,8 @@ class CapricornAgent:
 
             logger.info(f"Memory consolidation triggered by {triggered_by}")
 
-            import importlib.util
             import sys
-            mc_path = Path(self.config.vertical_hub) / "default" / "workflows" / "memory_consolidation" / "__init__.py"
+            mc_path = self._active_dir / "workflows" / "memory_consolidation" / "__init__.py"
             project_root = str(Path(__file__).parent.parent)
             if project_root not in sys.path:
                 sys.path.insert(0, project_root)
@@ -379,3 +421,21 @@ class CapricornAgent:
             await self.capability_registry.cleanup()
 
         logger.info("✓ Cleanup completed")
+
+    async def _auto_register_verifier_cron(self):
+        """自动注册 verifier 定时验收任务（仅当不存在时）"""
+        existing = self._cron_scheduler.list_jobs()
+        for job in existing:
+            if "auto_verifier" in job.get("tags", []):
+                logger.debug("Verifier cron already exists, skipping auto-registration")
+                return
+
+        await self._cron_scheduler.create_job(
+            name="每日质量验收",
+            schedule="0 18 * * *",
+            prompt="执行质量验证流程。",
+            role="verifier",
+            fresh_session=True,
+            tags=["auto_verifier"],
+        )
+        logger.info("Auto-registered verifier cron job (daily 18:00)")

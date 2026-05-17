@@ -8,7 +8,7 @@ BaseTool - 工具抽象基类
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Tuple, Union, get_origin, get_args
+from typing import Any, Dict, List
 from loguru import logger
 
 

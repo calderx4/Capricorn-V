@@ -24,7 +24,7 @@ class NotificationBus:
 
     def __init__(self):
         self._subscribers: List[asyncio.Queue] = []
-        self._path = Path("gateway/notifications.jsonl")
+        self._path = Path(__file__).resolve().parent.parent / "gateway" / "notifications.jsonl"
         self._path.parent.mkdir(parents=True, exist_ok=True)
         self._file_lock = asyncio.Lock()
 

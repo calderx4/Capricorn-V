@@ -130,7 +130,7 @@ class Config(BaseModel):
             FileNotFoundError: 配置文件不存在
             ValidationError: 配置验证失败
         """
-        path = Path(config_path)
+        path = Path(config_path).resolve()
 
         if not path.exists():
             raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -141,7 +141,16 @@ class Config(BaseModel):
         # 解析环境变量
         data = cls._resolve_env_vars(data)
 
-        return cls(**data)
+        # 解析 workspace.root 为绝对路径（基于项目根目录 = config 文件的上上级）
+        if "workspace" in data and "root" in data["workspace"]:
+            ws_root = Path(data["workspace"]["root"])
+            if not ws_root.is_absolute():
+                project_root = path.parent.parent  # config/config.json → project root
+                data["workspace"]["root"] = str((project_root / ws_root).resolve())
+
+        config = cls(**data)
+        logger.info(f"Configuration loaded from {config_path}")
+        return config
 
     @staticmethod
     def _resolve_env_vars(data: Any) -> Any:

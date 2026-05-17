@@ -17,47 +17,9 @@ from .loader import SkillLoader
 class SkillManager:
     """技能管理器"""
 
-    def __init__(self, skills_dir: str = None):
-        """
-        初始化技能管理器
-
-        Args:
-            skills_dir: 技能目录路径（可选，兼容旧用法）
-        """
-        self.skills_dir = Path(skills_dir) if skills_dir else None
+    def __init__(self):
         self._skills: Dict[str, Dict[str, Any]] = {}
         self._vertical_dirs: Dict[str, Path] = {}  # vertical_name → skills_dir
-
-        if self.skills_dir:
-            self._load_all_skills()
-
-    def _load_all_skills(self) -> None:
-        """加载所有技能"""
-        if not self.skills_dir or not self.skills_dir.exists():
-            logger.warning(f"Skills directory not found: {self.skills_dir}")
-            return
-
-        for skill_dir in self.skills_dir.iterdir():
-            if not skill_dir.is_dir():
-                continue
-
-            skill_file = SkillLoader.find_skill_file(skill_dir)
-            if not skill_file:
-                logger.debug(f"No SKILL.md found in {skill_dir}")
-                continue
-
-            try:
-                skill_data = SkillLoader.load(skill_file)
-                skill_name = skill_data.get("name")
-
-                if skill_name:
-                    self._skills[skill_name] = skill_data
-                    logger.debug(f"Loaded skill: {skill_name}")
-                else:
-                    logger.warning(f"Skill missing 'name' field: {skill_file}")
-
-            except Exception as e:
-                logger.error(f"Failed to load skill from {skill_file}: {e}")
 
     def add_skills_dir(self, vertical_name: str, skills_dir) -> None:
         """按垂类命名空间追加 skill 目录"""
@@ -150,6 +112,24 @@ class SkillManager:
             if data.get("available", False)
         }
 
+    def get_autoload_skills(self) -> Dict[str, Dict[str, Any]]:
+        """
+        获取所有 autoload=true 的技能，用于直接注入 system prompt。
+
+        Returns:
+            自动加载技能字典 {name: skill_data}
+        """
+        seen = set()
+        result = {}
+        for name, data in self._skills.items():
+            if data.get("autoload", False):
+                # 无命名空间优先（避免 default.xxx 重复）
+                short_name = name.split(".", 1)[-1] if "." in name else name
+                if short_name not in seen:
+                    seen.add(short_name)
+                    result[short_name] = data
+        return result
+
     def get_skill_summary(self) -> str:
         """
         获取所有可用技能的摘要（XML 格式）
@@ -168,13 +148,3 @@ class SkillManager:
             summaries.append(summary)
 
         return "<skills>\n" + "\n".join(summaries) + "\n</skills>"
-
-    def has(self, name: str) -> bool:
-        """检查技能是否存在"""
-        return name in self._skills
-
-    def __len__(self) -> int:
-        return len(self._skills)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._skills

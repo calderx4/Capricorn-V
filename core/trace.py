@@ -1,8 +1,8 @@
 """
 Trace - 结构化执行链路记录
 
-输出到 logs/trace.jsonl，每行一个 JSON 事件。
-与 logs/trace.log（loguru 输出）并存，不冲突。
+输出到 gateway/logs/trace.jsonl，每行一个 JSON 事件。
+与 gateway/logs/trace.log（loguru 输出）并存，不冲突。
 """
 
 import json
@@ -10,8 +10,13 @@ from datetime import datetime
 from pathlib import Path
 from threading import Lock
 
-_trace_file: Path = Path("logs/trace.jsonl")
+_trace_file: Path = Path(__file__).resolve().parent.parent / "gateway" / "logs" / "trace.jsonl"
 _lock = Lock()
+
+_SENSITIVE_KEYS = frozenset({
+    "api_key", "apikey", "key", "secret", "password", "token",
+    "authorization", "credentials", "auth", "private_key",
+})
 
 
 def _ensure_dir():
@@ -29,8 +34,12 @@ def write_event(event: dict):
 
 def tool_call(round: int, tool: str, args: dict, latency_ms: int, status: str):
     """记录单个工具调用"""
-    # 入参摘要：只保留前 200 字符
-    args_summary = {k: (str(v)[:200] if len(str(v)) > 200 else v) for k, v in args.items()}
+    args_summary = {}
+    for k, v in args.items():
+        if k.lower() in _SENSITIVE_KEYS:
+            args_summary[k] = "***REDACTED***"
+        else:
+            args_summary[k] = str(v)[:200]
     write_event({
         "type": "tool_call",
         "round": round,

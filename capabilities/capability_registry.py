@@ -68,22 +68,11 @@ class CapabilityRegistry:
                     except Exception as e:
                         logger.error(f"Failed to instantiate {cls.__name__}: {e}")
 
-    async def register_tools_from_dir(self, tools_dir: Path, config: dict, layer: str = "vertical", vertical_name: str = None, tool_prefix: str = None):
-        """从指定目录扫描并注册 tools
-
-        Args:
-            tool_prefix: 工具名前缀。None 时自动根据 vertical_name 决定（default 不加，其余加 vertical_name_ 前缀）。
-                         显式传入字符串则作为前缀，传入 None 且 vertical_name 也为 None 则不加前缀。
-        """
+    async def register_tools_from_dir(self, tools_dir: Path, config: dict, layer: str = "vertical", vertical_name: str = None):
+        """从指定目录扫描并注册 tools。工具使用原始名称，无前缀。"""
         for tool in self._discover(tools_dir, BaseTool, config):
-            if tool_prefix is not None:
-                public_name = f"{tool_prefix}_{tool.name}" if tool_prefix else tool.name
-            elif vertical_name and vertical_name != "default":
-                public_name = f"{vertical_name}_{tool.name}"
-            else:
-                public_name = tool.name
-            self.tools.register(tool, layer=layer, public_name=public_name, vertical_name=vertical_name)
-            logger.debug(f"Registered [{layer}] tool: {public_name}")
+            self.tools.register(tool, layer=layer, vertical_name=vertical_name)
+            logger.debug(f"Registered [{layer}] tool: {tool.name}")
 
     async def register_workflows_from_dir(self, workflows_dir: Path, layer: str = "vertical"):
         """从指定目录扫描并注册 workflows"""
@@ -114,11 +103,14 @@ class CapabilityRegistry:
         self._mcp_manager = MCPClientManager(mcp_servers)
         await self._mcp_manager.connect(self.tools, layer="mcp")
 
-    async def register_skill_tools(self, skill_manager):
+    async def register_skill_tools(self, skill_manager, vertical_dir: Path = None):
         """注册 skill_view 工具"""
         import importlib.util
         project_root = Path(__file__).parent.parent
-        skill_tool_path = project_root / "vertical_hub" / "default" / "tools" / "skill_tool.py"
+        if vertical_dir:
+            skill_tool_path = vertical_dir / "tools" / "skill_tool.py"
+        else:
+            skill_tool_path = project_root / "vertical_hub" / "default" / "tools" / "skill_tool.py"
         if not skill_tool_path.exists():
             logger.warning("skill_tool.py not found, skipping skill_view registration")
             return

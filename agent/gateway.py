@@ -33,6 +33,7 @@ MAX_PROMPT_LENGTH = 50000
 MAX_CONCURRENT_TASKS = 20
 MAX_SSE_CLIENTS = 50
 TASK_ID_RE = re.compile(r'^[0-9a-f]{8}$')
+THREAD_ID_RE = re.compile(r'^[a-zA-Z0-9_-]{1,64}$')
 
 
 @web.middleware
@@ -85,6 +86,8 @@ class Gateway:
         site = web.TCPSite(runner, self.host, self.port)
         await site.start()
         logger.info(f"Gateway started on {self.host}:{self.port}" + (" (with WebUI)" if self.webui else ""))
+        if not self._api_key:
+            logger.warning("⚠ GATEWAY_API_KEY not set — authentication disabled. All endpoints are open.")
         if self._api_key:
             logger.info("Gateway authentication enabled")
 
@@ -138,6 +141,8 @@ class Gateway:
             return err
 
         thread_id = body.get("thread_id", "default")
+        if not THREAD_ID_RE.fullmatch(thread_id):
+            return web.json_response({"error": "Invalid thread_id"}, status=400)
 
         try:
             lock = self._get_thread_lock(thread_id)
